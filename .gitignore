@@ -1,0 +1,9 @@
+**/node_modules/
+*/hs_err_pid.log
+*/replay_pid.log
+**/.env
+*/.env.
+**/serviceAccountKey.json
+**/android/.gradle/
+**/android/app/build/
+**/ios/Pods/

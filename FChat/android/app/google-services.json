@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "267576250372",
+    "project_id": "chatdemo-a7670",
+    "storage_bucket": "chatdemo-a7670.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:267576250372:android:82188322dd7d4ab0c82551",
+        "android_client_info": {
+          "package_name": "com.firebasechatpoc"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDY74nY8_6YI8oosC5LE5QMoXmkoQvPiS4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
