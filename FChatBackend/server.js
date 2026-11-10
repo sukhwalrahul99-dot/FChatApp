@@ -7,10 +7,12 @@ const {getFirestore} = require('firebase-admin/firestore');
 const {getAuth} = require('firebase-admin/auth');
 const {getMessaging} = require('firebase-admin/messaging');
 
-// Firebase Service Account
+// ---------------------------------------------
+// FIREBASE ADMIN INITIALIZATION
+// ---------------------------------------------
+
 const serviceAccount = require('./serviceAccountKey.json');
 
-// Initialize Firebase Admin
 const firebaseApp = initializeApp({
   credential: cert(serviceAccount),
 });
@@ -19,7 +21,10 @@ const db = getFirestore(firebaseApp);
 const auth = getAuth(firebaseApp);
 const messaging = getMessaging(firebaseApp);
 
-// Initialize Express
+// ---------------------------------------------
+// EXPRESS INITIALIZATION
+// ---------------------------------------------
+
 const app = express();
 
 app.use(cors());
@@ -30,10 +35,13 @@ app.get('/', (req, res) => {
   res.status(200).send('FChat Notification Backend Running');
 });
 
-// Send notification to a single recipient
+// ---------------------------------------------
+// SEND SINGLE / GROUP NOTIFICATION
+// ---------------------------------------------
+
 app.post('/send-notification', async (req, res) => {
   try {
-    // Verify Firebase Authentication
+    // 1. Verify Firebase Authentication
     const authHeader = req.headers.authorization || '';
 
     if (!authHeader.startsWith('Bearer ')) {
@@ -44,19 +52,34 @@ app.post('/send-notification', async (req, res) => {
     }
 
     const idToken = authHeader.substring(7);
+
     const decodedToken = await auth.verifyIdToken(idToken);
+
     const senderId = decodedToken.uid;
 
-    const {conversationId, messageId} = req.body;
+    // 2. Get request data
+    const {
+      conversationId,
+      messageId,
+      notificationType,
+    } = req.body;
 
-    if (!conversationId || !messageId) {
+    if (!conversationId || !messageId || !notificationType) {
       return res.status(400).json({
         success: false,
-        message: 'conversationId and messageId are required',
+        message:
+          'conversationId, messageId and notificationType are required',
       });
     }
 
-    // Get conversation
+    if (!['single', 'group'].includes(notificationType)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid notification type',
+      });
+    }
+
+    // 3. Get conversation
     const conversationRef = db
       .collection('conversations')
       .doc(conversationId);
@@ -71,20 +94,41 @@ app.post('/send-notification', async (req, res) => {
     }
 
     const conversation = conversationSnap.data();
+
     const members = conversation.members || [];
 
-    // Verify sender belongs to conversation
-    if (
-      !members.includes(senderId) ||
-      members.length !== 2
-    ) {
+    // 4. Validate conversation members
+    if (!Array.isArray(members) || !members.includes(senderId)) {
       return res.status(403).json({
         success: false,
         message: 'Invalid conversation access',
       });
     }
 
-    // Get message
+    // 5. Identify conversation type
+    const actualType =
+      conversation.type === 'group' || members.length > 2
+        ? 'group'
+        : 'single';
+
+    if (
+      (actualType === 'single' && members.length !== 2) ||
+      (actualType === 'group' && members.length < 3)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid conversation members',
+      });
+    }
+
+    if (notificationType !== actualType) {
+      return res.status(400).json({
+        success: false,
+        message: 'Notification type does not match conversation',
+      });
+    }
+
+    // 6. Get message
     const messageRef = conversationRef
       .collection('messages')
       .doc(messageId);
@@ -100,7 +144,7 @@ app.post('/send-notification', async (req, res) => {
 
     const message = messageSnap.data();
 
-    // Verify message sender
+    // 7. Verify message sender
     if (message.senderId !== senderId) {
       return res.status(403).json({
         success: false,
@@ -108,7 +152,7 @@ app.post('/send-notification', async (req, res) => {
       });
     }
 
-    // Prevent duplicate notification
+    // 8. Prevent duplicate notification
     if (message.notificationSent === true) {
       return res.status(200).json({
         success: true,
@@ -116,80 +160,181 @@ app.post('/send-notification', async (req, res) => {
       });
     }
 
-    // Find recipient
-    const recipientId = members.find(
-      uid => uid !== senderId,
-    );
-
-    if (!recipientId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Recipient not found',
-      });
-    }
-
-    // Get recipient FCM token
-    const recipientSnap = await db
+    // 9. Get sender details
+    const senderSnap = await db
       .collection('users')
-      .doc(recipientId)
+      .doc(senderId)
       .get();
 
-    if (!recipientSnap.exists) {
-      return res.status(404).json({
-        success: false,
-        message: 'Recipient user not found',
-      });
-    }
+    const senderName = senderSnap.exists
+      ? senderSnap.data()?.name || 'New Message'
+      : 'New Message';
 
-    const fcmToken = recipientSnap.data()?.fcmToken;
-
-    if (!fcmToken) {
-      return res.status(404).json({
-        success: false,
-        message: 'Recipient FCM token not found',
-      });
-    }
-
-    // Notification content
+    // 10. Notification body
     const notificationBody =
       message.messageType === 'text'
         ? message.text
-        : `New ${message.messageType}`;
+        : `New ${message.messageType || 'message'}`;
 
-    // Send FCM notification
-    const result = await messaging.send({
-      token: fcmToken,
+    // 11. Find recipients
+    // Sender will not receive their own notification
+    const recipientIds = members.filter(
+      uid => uid !== senderId,
+    );
 
-      notification: {
-        title: 'New Message',
-        body: notificationBody || 'You received a new message',
-      },
+    if (recipientIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No recipients found',
+      });
+    }
 
-      data: {
-        type: 'single',
-        conversationId: String(conversationId),
-        senderId: String(senderId),
-        messageId: String(messageId),
-      },
+    // 12. Get recipient FCM tokens
+    const recipientSnapshots = await Promise.all(
+      recipientIds.map(uid =>
+        db.collection('users').doc(uid).get(),
+      ),
+    );
 
-      android: {
-        priority: 'high',
+    const tokens = [];
+    const tokenOwners = [];
+
+    recipientSnapshots.forEach((snapshot, index) => {
+      if (!snapshot.exists) {
+        return;
+      }
+
+      const token = snapshot.data()?.fcmToken;
+
+      if (token) {
+        tokens.push(token);
+        tokenOwners.push(recipientIds[index]);
+      }
+    });
+
+    if (tokens.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No recipient FCM tokens found',
+      });
+    }
+
+    // Firebase multicast supports up to 500 tokens per request
+    if (tokens.length > 500) {
+      return res.status(400).json({
+        success: false,
+        message: 'Maximum 500 recipients allowed per request',
+      });
+    }
+
+    // 13. Prepare notification data
+    const notificationData = {
+      type: notificationType,
+      notificationType,
+      conversationId: String(conversationId),
+      senderId: String(senderId),
+      senderName: String(senderName),
+      messageId: String(messageId),
+    };
+
+    if (actualType === 'group') {
+      notificationData.groupName = String(
+        conversation.groupName || 'Group Chat',
+      );
+    }
+
+    // 14. Prepare title
+    const notificationTitle =
+      actualType === 'group'
+        ? `${senderName} in ${conversation.groupName || 'Group'}`
+        : senderName;
+
+    // 15. Send notification to recipients
+    const multicastResult =
+      await messaging.sendEachForMulticast({
+        tokens,
+
         notification: {
-          channelId: 'default',
-          sound: 'default',
+          title: notificationTitle,
+          body:
+            notificationBody ||
+            'You received a new message',
         },
-      },
+
+        data: notificationData,
+
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'default',
+            sound: 'default',
+          },
+        },
+      });
+
+    // 16. Handle invalid FCM tokens
+    const invalidTokenOwners = [];
+
+    multicastResult.responses.forEach((result, index) => {
+      if (!result.success) {
+        console.log(
+          'Notification failed:',
+          tokenOwners[index],
+          result.error?.message,
+        );
+
+        const errorCode = result.error?.code;
+
+        if (
+          errorCode ===
+            'messaging/invalid-registration-token' ||
+          errorCode ===
+            'messaging/registration-token-not-registered'
+        ) {
+          invalidTokenOwners.push(tokenOwners[index]);
+        }
+      }
     });
 
-    // Mark notification as sent
-    await messageRef.update({
-      notificationSent: true,
-    });
+    // Remove invalid tokens
+    if (invalidTokenOwners.length > 0) {
+      await Promise.all(
+        invalidTokenOwners.map(uid =>
+          db.collection('users').doc(uid).update({
+            fcmToken: null,
+          }).catch(error => {
+            console.log('Token cleanup error:', error);
+          }),
+        ),
+      );
+    }
 
+    // 17. Mark notification status
+    if (multicastResult.successCount > 0) {
+      await messageRef.update({
+        notificationSent: true,
+        notificationType,
+      });
+    }
+
+    // 18. Server logs
+    console.log('------------------------------');
+    console.log('Notification Type:', notificationType);
+    console.log('Sender:', senderName);
+    console.log('Total Tokens:', tokens.length);
+    console.log('Successful:', multicastResult.successCount);
+    console.log('Failed:', multicastResult.failureCount);
+    console.log('------------------------------');
+
+    // 19. API response
     return res.status(200).json({
-      success: true,
-      message: 'Notification sent successfully',
-      fcmMessageId: result,
+      success: multicastResult.successCount > 0,
+      notificationType,
+      senderName,
+      totalRecipients: tokens.length,
+      successCount: multicastResult.successCount,
+      failureCount: multicastResult.failureCount,
+      message: 'Notification processing completed',
     });
 
   } catch (error) {
@@ -197,14 +342,18 @@ app.post('/send-notification', async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: error.message || 'Unable to send notification',
+      message:
+        error.message || 'Unable to send notification',
     });
   }
 });
 
-// Start server
+// ---------------------------------------------
+// START SERVER
+// ---------------------------------------------
+
 const PORT = 5000;
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`FChat Notification Server running on port ${PORT}`);
 });

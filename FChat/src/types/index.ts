@@ -1,4 +1,3 @@
-
 export interface UserProfile {
   uid: string;
   name: string;
@@ -11,23 +10,6 @@ export interface ChatMessage {
   text: string;
   senderId: string;
   createdAt?: any;
-}
-
-export interface Conversation {
-  id: string;
-  members: string[];
-  updatedAt?: any;
-}
-
-
-
-
-export interface ChatMessage {
-  id: string;
-  text: string;
-  senderId: string;
-  createdAt?: any;
-
   messageType?: 'text' | 'image' | 'video' | 'document';
   mediaUrl?: string;
   fileName?: string;
@@ -36,5 +18,18 @@ export interface ChatMessage {
   cloudinaryPublicId?: string;
   resourceType?: string;
   seenBy?: string[];
+  notificationSent?: boolean;
 }
 
+export interface Conversation {
+  id: string;
+  members: string[];
+  type?: 'single' | 'group';
+  groupName?: string;
+  createdBy?: string;
+  updatedAt?: any;
+  lastMessage?: string;
+  lastMessageType?: string;
+  lastMessageAt?: any;
+  unreadCounts?: Record<string, number>;
+}

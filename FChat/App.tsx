@@ -3,11 +3,11 @@ import React, {useEffect, useState} from 'react';
 
 import {
   ActivityIndicator,
+  Alert,
   SafeAreaView,
   StatusBar,
   StyleSheet,
   View,
-  Alert,
 } from 'react-native';
 
 import {
@@ -20,6 +20,10 @@ import {
   onMessage,
 } from '@react-native-firebase/messaging';
 
+import notifee, {
+  AndroidImportance,
+} from '@notifee/react-native';
+
 import {auth} from './src/services/firebase';
 
 import {
@@ -31,8 +35,16 @@ import LoginScreen from './src/screens/LoginScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
 import UsersScreen from './src/screens/UsersScreen';
 import ChatScreen from './src/screens/ChatScreen';
+import CreateGroupScreen from './src/screens/CreateGroupScreen';
+import GroupChatScreen from './src/screens/GroupChatScreen';
 
 import {UserProfile} from './src/types';
+
+interface SelectedGroup {
+  id: string;
+  groupName: string;
+  members: string[];
+}
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -40,22 +52,29 @@ export default function App() {
   const [selectedUser, setSelectedUser] =
     useState<UserProfile | null>(null);
 
+  const [selectedGroup, setSelectedGroup] =
+    useState<SelectedGroup | null>(null);
+
   const [showRegister, setShowRegister] = useState(false);
+
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
 
   const [loading, setLoading] = useState(true);
 
-  // Firebase authentication listener
+  // 1. Firebase Authentication Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, user => {
       setCurrentUser(user);
       setSelectedUser(null);
+      setSelectedGroup(null);
+      setShowCreateGroup(false);
       setLoading(false);
     });
 
     return unsubscribe;
   }, []);
 
-  // Register FCM token and listen for token refresh
+  // 2. FCM Token Registration
   useEffect(() => {
     if (!currentUser) {
       return;
@@ -70,48 +89,75 @@ export default function App() {
     return unsubscribeToken;
   }, [currentUser?.uid]);
 
-  // Foreground notification listener
+  // 3. Notification Channel
+  useEffect(() => {
+    const setupNotificationChannel = async () => {
+      try {
+        await notifee.createChannel({
+          id: 'default',
+          name: 'Default Notifications',
+          importance: AndroidImportance.HIGH,
+          sound: 'default',
+        });
+      } catch (error) {
+        console.log('Notification Channel Error:', error);
+      }
+    };
+
+    setupNotificationChannel();
+  }, []);
+
+  // 4. Foreground Notification Listener
   useEffect(() => {
     const messaging = getMessaging();
 
     const unsubscribe = onMessage(
       messaging,
       async remoteMessage => {
-        console.log(
-          'Foreground Notification:',
-          remoteMessage,
-        );
+        console.log('Foreground Notification:', remoteMessage);
 
-        const title =
-          remoteMessage.notification?.title || 'New Notification';
+        try {
+          await notifee.displayNotification({
+            title:
+              remoteMessage.notification?.title || 'New Message',
 
-        const body =
-          remoteMessage.notification?.body || 'You received a new message';
+            body:
+              remoteMessage.notification?.body ||
+              'You received a new message',
 
-        Alert.alert(title, body);
+            android: {
+              channelId: 'default',
+              importance: AndroidImportance.HIGH,
+              sound: 'default',
+              pressAction: {
+                id: 'default',
+                launchActivity: 'default',
+              },
+            },
+          });
+        } catch (error) {
+          console.log('Display Notification Error:', error);
+        }
       },
     );
 
     return unsubscribe;
   }, []);
 
-  // Loading screen
+  // 5. Loading Screen
   if (loading) {
     return (
       <View style={styles.loader}>
-        <ActivityIndicator
-          size="large"
-          color="#2563EB"
-        />
+        <ActivityIndicator size="large" color="#2563EB" />
       </View>
     );
   }
 
+  // 6. Main UI
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" />
 
-      {/* Login and Register */}
       {!currentUser ? (
         showRegister ? (
           <RegisterScreen
@@ -123,22 +169,49 @@ export default function App() {
           />
         )
       ) : selectedUser ? (
-
-        /* One-to-One Chat Screen */
         <ChatScreen
           currentUserId={currentUser.uid}
           selectedUser={selectedUser}
           onBack={() => setSelectedUser(null)}
         />
-
+      ) : selectedGroup ? (
+        <GroupChatScreen
+          currentUserId={currentUser.uid}
+          groupId={selectedGroup.id}
+          groupName={selectedGroup.groupName}
+          memberCount={selectedGroup.members.length}
+          onBack={() => setSelectedGroup(null)}
+        />
+      ) : showCreateGroup ? (
+        <CreateGroupScreen
+          currentUserId={currentUser.uid}
+          onBack={() => setShowCreateGroup(false)}
+          onGroupCreated={() => {
+            setShowCreateGroup(false);
+          }}
+        />
       ) : (
-
-        /* Users List Screen */
         <UsersScreen
           currentUserId={currentUser.uid}
           currentUserEmail={currentUser.email || ''}
-          onUserSelect={user => setSelectedUser(user)}
-          onLogout={() => setSelectedUser(null)}
+          onUserSelect={user => {
+            setSelectedUser(user);
+          }}
+          onCreateGroup={() => {
+            setShowCreateGroup(true);
+          }}
+          onGroupSelect={group => {
+            setSelectedGroup({
+              id: group.id,
+              groupName: group.groupName || 'Group',
+              members: group.members || [],
+            });
+          }}
+          onLogout={() => {
+            setSelectedUser(null);
+            setSelectedGroup(null);
+            setShowCreateGroup(false);
+          }}
         />
       )}
     </SafeAreaView>

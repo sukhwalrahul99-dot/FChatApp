@@ -14,6 +14,7 @@ import {
   updateDoc,
   deleteDoc,
   arrayUnion,
+  increment,
 } from '@react-native-firebase/firestore';
 
 import {getIdToken} from '@react-native-firebase/auth';
@@ -26,14 +27,19 @@ const CLOUDINARY_CLOUD_NAME = 'eqhym3o6';
 const CLOUDINARY_UPLOAD_PRESET = 'chat_media';
 
 // Notification Backend URL
-// Android Emulator: 10.0.2.2
-// Physical Mobile: Replace with your computer's local IPv4 address
-const NOTIFICATION_API_URL = 'http://10.0.2.2:5000';
+const NOTIFICATION_API_URL =
+  'https://kebab-chewy-garden.ngrok-free.dev';
 
-// Send Push Notification
+export type NotificationType = 'single' | 'group';
+
+// ---------------------------------------------
+// PUSH NOTIFICATION
+// ---------------------------------------------
+
 const sendPushNotification = async (
   conversationId: string,
   messageId: string,
+  notificationType: NotificationType,
 ) => {
   try {
     const currentUser = auth.currentUser;
@@ -56,6 +62,7 @@ const sendPushNotification = async (
         body: JSON.stringify({
           conversationId,
           messageId,
+          notificationType,
         }),
       },
     );
@@ -67,13 +74,16 @@ const sendPushNotification = async (
       return;
     }
 
-    console.log('Notification Sent Successfully:', result);
+    console.log('Notification Sent:', result);
   } catch (error) {
     console.log('Push Notification Error:', error);
   }
 };
 
-// Get all registered users except current user
+// ---------------------------------------------
+// GET USERS
+// ---------------------------------------------
+
 export const getUsers = async (currentUserId: string) => {
   const usersQuery = query(
     collection(db, 'users'),
@@ -88,7 +98,10 @@ export const getUsers = async (currentUserId: string) => {
   }));
 };
 
-// Generate unique conversation ID
+// ---------------------------------------------
+// SINGLE CONVERSATION ID
+// ---------------------------------------------
+
 export const getConversationId = (
   currentUserId: string,
   otherUserId: string,
@@ -96,7 +109,10 @@ export const getConversationId = (
   return [currentUserId, otherUserId].sort().join('_');
 };
 
-// Create or open private conversation
+// ---------------------------------------------
+// CREATE SINGLE CONVERSATION
+// ---------------------------------------------
+
 export const createConversation = async (
   currentUserId: string,
   otherUserId: string,
@@ -124,8 +140,13 @@ export const createConversation = async (
 
   if (!conversationSnapshot.exists()) {
     await setDoc(conversationRef, {
+      type: 'single',
       members: [currentUserId, otherUserId].sort(),
       updatedAt: serverTimestamp(),
+      unreadCounts: {
+        [currentUserId]: 0,
+        [otherUserId]: 0,
+      },
     });
   } else {
     const data = conversationSnapshot.data();
@@ -137,18 +158,111 @@ export const createConversation = async (
     ) {
       throw new Error('Conversation members do not match.');
     }
-
-    await updateDoc(conversationRef, {
-      updatedAt: serverTimestamp(),
-    });
   }
 
   return conversationId;
 };
 
-// Update conversation timestamp
-const updateConversationTime = async (
+// ---------------------------------------------
+// CREATE GROUP CONVERSATION
+// ---------------------------------------------
+
+export const createGroupConversation = async (
+  groupName: string,
+  memberIds: string[],
+  createdBy: string,
+) => {
+  if (!groupName.trim()) {
+    throw new Error('Group name is required.');
+  }
+
+  if (!createdBy) {
+    throw new Error('Creator ID is required.');
+  }
+
+  // Include creator and remove duplicate IDs
+  const members = [
+    ...new Set([...memberIds, createdBy]),
+  ];
+
+  if (members.length < 3) {
+    throw new Error('Select at least 2 other members.');
+  }
+
+  const groupRef = doc(collection(db, 'conversations'));
+
+  const unreadCounts: Record<string, number> = {};
+
+  members.forEach(uid => {
+    unreadCounts[uid] = 0;
+  });
+
+  await setDoc(groupRef, {
+    type: 'group',
+    groupName: groupName.trim(),
+    members,
+    createdBy,
+    lastMessage: 'Group created',
+    lastMessageType: 'text',
+    lastMessageAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    unreadCounts,
+  });
+
+  return groupRef.id;
+};
+
+// ---------------------------------------------
+// LISTEN TO GROUP CONVERSATIONS
+// ---------------------------------------------
+
+export const listenToGroupConversations = (
+  currentUserId: string,
+  callback: (groups: any[]) => void,
+  onError?: (error: Error) => void,
+) => {
+  const groupsQuery = query(
+    collection(db, 'conversations'),
+    where('members', 'array-contains', currentUserId),
+    where('type', '==', 'group'),
+  );
+
+  return onSnapshot(
+    groupsQuery,
+    snapshot => {
+      const groups = snapshot.docs.map(item => ({
+        id: item.id,
+        ...item.data(),
+      }));
+
+      groups.sort((a: any, b: any) => {
+        const dateA =
+          a.lastMessageAt?.toDate?.()?.getTime() || 0;
+
+        const dateB =
+          b.lastMessageAt?.toDate?.()?.getTime() || 0;
+
+        return dateB - dateA;
+      });
+
+      callback(groups);
+    },
+    error => {
+      console.log('Group Listener Error:', error);
+      onError?.(error);
+    },
+  );
+};
+
+// ---------------------------------------------
+// UPDATE CONVERSATION AFTER MESSAGE
+// ---------------------------------------------
+
+const updateConversationAfterMessage = async (
   conversationId: string,
+  senderId: string,
+  lastMessage: string,
+  messageType: string,
 ) => {
   const conversationRef = doc(
     db,
@@ -156,12 +270,48 @@ const updateConversationTime = async (
     conversationId,
   );
 
-  await updateDoc(conversationRef, {
+  const conversationSnapshot = await getDoc(conversationRef);
+
+  if (!conversationSnapshot.exists()) {
+    throw new Error('Conversation not found.');
+  }
+
+  const conversationData = conversationSnapshot.data();
+
+  const members: string[] = conversationData.members || [];
+
+  if (!members.includes(senderId)) {
+    throw new Error('You are not a conversation member.');
+  }
+
+  const notificationType: NotificationType =
+    conversationData.type === 'group' || members.length > 2
+      ? 'group'
+      : 'single';
+
+  const updateData: Record<string, any> = {
+    lastMessage,
+    lastMessageType: messageType,
+    lastMessageAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
+  };
+
+  // Increment unread count for every recipient except sender
+  members.forEach(uid => {
+    if (uid !== senderId) {
+      updateData[`unreadCounts.${uid}`] = increment(1);
+    }
   });
+
+  await updateDoc(conversationRef, updateData);
+
+  return notificationType;
 };
 
-// Send text message
+// ---------------------------------------------
+// SEND TEXT MESSAGE
+// ---------------------------------------------
+
 export const sendMessage = async (
   conversationId: string,
   text: string,
@@ -171,7 +321,24 @@ export const sendMessage = async (
     return;
   }
 
-  // Save message in Firestore
+  const conversationRef = doc(
+    db,
+    'conversations',
+    conversationId,
+  );
+
+  const conversationSnapshot = await getDoc(conversationRef);
+
+  if (!conversationSnapshot.exists()) {
+    throw new Error('Conversation not found.');
+  }
+
+  const conversationData = conversationSnapshot.data();
+
+  if (!(conversationData.members || []).includes(senderId)) {
+    throw new Error('You are not a conversation member.');
+  }
+
   const messageRef = await addDoc(
     collection(
       db,
@@ -185,21 +352,30 @@ export const sendMessage = async (
       messageType: 'text',
       seenBy: [senderId],
       createdAt: serverTimestamp(),
+      notificationSent: false,
     },
   );
 
-  await updateConversationTime(conversationId);
+  const notificationType = await updateConversationAfterMessage(
+    conversationId,
+    senderId,
+    text.trim(),
+    'text',
+  );
 
-  // Send notification to recipient
   await sendPushNotification(
     conversationId,
     messageRef.id,
+    notificationType,
   );
 
   return messageRef.id;
 };
 
-// Get Cloudinary resource type
+// ---------------------------------------------
+// CLOUDINARY RESOURCE TYPE
+// ---------------------------------------------
+
 const getResourceType = (fileType: string) => {
   if (fileType.startsWith('image/')) {
     return 'image';
@@ -212,7 +388,10 @@ const getResourceType = (fileType: string) => {
   return 'raw';
 };
 
-// Upload media to Cloudinary
+// ---------------------------------------------
+// UPLOAD MEDIA
+// ---------------------------------------------
+
 export const uploadMedia = async (
   conversationId: string,
   senderId: string,
@@ -231,6 +410,7 @@ export const uploadMedia = async (
     ).replace(/[^a-zA-Z0-9._-]/g, '_');
 
     const mimeType = fileType || 'application/octet-stream';
+
     const resourceType = getResourceType(mimeType);
 
     const formData = new FormData();
@@ -263,8 +443,7 @@ export const uploadMedia = async (
 
     if (!response.ok) {
       throw new Error(
-        result?.error?.message ||
-          'Cloudinary upload failed.',
+        result?.error?.message || 'Cloudinary upload failed.',
       );
     }
 
@@ -282,7 +461,6 @@ export const uploadMedia = async (
       messageType = 'document';
     }
 
-    // Save media message in Firestore
     const messageRef = await addDoc(
       collection(
         db,
@@ -302,15 +480,28 @@ export const uploadMedia = async (
         cloudinaryPublicId: result.public_id,
         resourceType,
         createdAt: serverTimestamp(),
+        notificationSent: false,
       },
     );
 
-    await updateConversationTime(conversationId);
+    const previewText =
+      messageType === 'image'
+        ? 'Photo'
+        : messageType === 'video'
+        ? 'Video'
+        : 'Document';
 
-    // Send notification to recipient
+    const notificationType = await updateConversationAfterMessage(
+      conversationId,
+      senderId,
+      previewText,
+      messageType,
+    );
+
     await sendPushNotification(
       conversationId,
       messageRef.id,
+      notificationType,
     );
 
     return {
@@ -328,7 +519,10 @@ export const uploadMedia = async (
   }
 };
 
-// Delete own message for everyone
+// ---------------------------------------------
+// DELETE OWN MESSAGE
+// ---------------------------------------------
+
 export const deleteMessage = async (
   conversationId: string,
   messageId: string,
@@ -357,37 +551,53 @@ export const deleteMessage = async (
   await deleteDoc(messageRef);
 };
 
-// Mark incoming messages as seen
+// ---------------------------------------------
+// MARK MESSAGES AS SEEN
+// ---------------------------------------------
+
 export const markMessagesAsSeen = async (
   conversationId: string,
   currentUserId: string,
   messages: ChatMessage[],
 ) => {
-  const updates = messages
-    .filter(
-      message =>
-        message.senderId !== currentUserId &&
-        !(message.seenBy || []).includes(currentUserId),
-    )
-    .map(message =>
-      updateDoc(
-        doc(
-          db,
-          'conversations',
-          conversationId,
-          'messages',
-          message.id,
-        ),
-        {
-          seenBy: arrayUnion(currentUserId),
-        },
-      ),
-    );
+  const incomingMessages = messages.filter(
+    message =>
+      message.senderId !== currentUserId &&
+      !(message.seenBy || []).includes(currentUserId),
+  );
 
-  await Promise.all(updates);
+  const updates = incomingMessages.map(message =>
+    updateDoc(
+      doc(
+        db,
+        'conversations',
+        conversationId,
+        'messages',
+        message.id,
+      ),
+      {
+        seenBy: arrayUnion(currentUserId),
+      },
+    ),
+  );
+
+  if (updates.length > 0) {
+    await Promise.all(updates);
+  }
+
+  // Reset current user's unread count
+  await updateDoc(
+    doc(db, 'conversations', conversationId),
+    {
+      [`unreadCounts.${currentUserId}`]: 0,
+    },
+  );
 };
 
-// Listen to real-time messages
+// ---------------------------------------------
+// LISTEN TO MESSAGES
+// ---------------------------------------------
+
 export const listenToMessages = (
   conversationId: string,
   callback: (messages: ChatMessage[]) => void,
