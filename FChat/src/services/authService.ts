@@ -20,15 +20,27 @@ import {
   onTokenRefresh,
 } from '@react-native-firebase/messaging';
 
+import notifee from '@notifee/react-native';
+
 import {auth, db} from './firebase';
 
-// Register and save FCM device token
+// ======================================
+// REGISTER AND SAVE FCM DEVICE TOKEN
+// ======================================
+
 export const registerFCMToken = async (uid: string) => {
   try {
     const messaging = getMessaging();
 
-    // Request notification permission
+    // Request notification permission through Notifee
+    const notifeePermission = await notifee.requestPermission();
+
+    console.log('Notifee Permission:', notifeePermission);
+
+    // Request Firebase messaging permission
     const permission = await requestPermission(messaging);
+
+    console.log('FCM Permission:', permission);
 
     const isAuthorized =
       permission === AuthorizationStatus.AUTHORIZED ||
@@ -46,6 +58,8 @@ export const registerFCMToken = async (uid: string) => {
       console.log('FCM token not generated');
       return null;
     }
+
+    console.log('Generated FCM Token:', token);
 
     // Save token in Firestore
     await setDoc(
@@ -66,12 +80,17 @@ export const registerFCMToken = async (uid: string) => {
   }
 };
 
-// Listen for FCM token refresh
+// ======================================
+// LISTEN FOR FCM TOKEN REFRESH
+// ======================================
+
 export const listenToFCMTokenRefresh = (uid: string) => {
   const messaging = getMessaging();
 
   return onTokenRefresh(messaging, async token => {
     try {
+      console.log('FCM Token Refreshed:', token);
+
       await setDoc(
         doc(db, 'users', uid),
         {
@@ -88,7 +107,10 @@ export const listenToFCMTokenRefresh = (uid: string) => {
   });
 };
 
-// Register User
+// ======================================
+// REGISTER USER
+// ======================================
+
 export const registerUser = async (
   name: string,
   email: string,
@@ -115,6 +137,7 @@ export const registerUser = async (
       createdAt: serverTimestamp(),
     });
 
+    // Register FCM token
     await registerFCMToken(credential.user.uid);
 
     return credential.user;
@@ -124,7 +147,10 @@ export const registerUser = async (
   }
 };
 
-// Login User
+// ======================================
+// LOGIN USER
+// ======================================
+
 export const loginUser = async (
   email: string,
   password: string,
@@ -136,6 +162,7 @@ export const loginUser = async (
       password,
     );
 
+    // Register FCM token after login
     await registerFCMToken(credential.user.uid);
 
     return credential.user;
@@ -145,10 +172,14 @@ export const loginUser = async (
   }
 };
 
-// Logout User
+// ======================================
+// LOGOUT USER
+// ======================================
+
 export const logoutUser = async () => {
   try {
     await signOut(auth);
+    console.log('User Logged Out Successfully');
   } catch (error) {
     console.log('Logout Error:', error);
     throw error;

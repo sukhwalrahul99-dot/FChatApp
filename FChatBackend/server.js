@@ -227,50 +227,47 @@ app.post('/send-notification', async (req, res) => {
       });
     }
 
-    // 13. Prepare notification data
-    const notificationData = {
-      type: notificationType,
-      notificationType,
-      conversationId: String(conversationId),
-      senderId: String(senderId),
-      senderName: String(senderName),
-      messageId: String(messageId),
-    };
+    
+// 13. Prepare notification title and body
+const notificationTitle =
+  actualType === 'group'
+    ? `${senderName} in ${conversation.groupName || 'Group'}`
+    : senderName;
 
-    if (actualType === 'group') {
-      notificationData.groupName = String(
-        conversation.groupName || 'Group Chat',
-      );
-    }
+const finalNotificationBody =
+  notificationBody || 'You received a new message';
 
-    // 14. Prepare title
-    const notificationTitle =
-      actualType === 'group'
-        ? `${senderName} in ${conversation.groupName || 'Group'}`
-        : senderName;
+// 14. Prepare notification data
+const notificationData = {
+  type: notificationType,
+  notificationType,
+  conversationId: String(conversationId),
+  senderId: String(senderId),
+  senderName: String(senderName),
+  messageId: String(messageId),
 
-    // 15. Send notification to recipients
-    const multicastResult =
-      await messaging.sendEachForMulticast({
-        tokens,
+  // Required for Notifee notification display
+  title: String(notificationTitle),
+  body: String(finalNotificationBody),
+};
 
-        notification: {
-          title: notificationTitle,
-          body:
-            notificationBody ||
-            'You received a new message',
-        },
+if (actualType === 'group') {
+  notificationData.groupName = String(
+    conversation.groupName || 'Group Chat',
+  );
+}
 
-        data: notificationData,
+// 15. Send DATA-ONLY notification
+const multicastResult =
+  await messaging.sendEachForMulticast({
+    tokens,
 
-        android: {
-          priority: 'high',
-          notification: {
-            channelId: 'default',
-            sound: 'default',
-          },
-        },
-      });
+    data: notificationData,
+
+    android: {
+      priority: 'high',
+    },
+  });
 
     // 16. Handle invalid FCM tokens
     const invalidTokenOwners = [];

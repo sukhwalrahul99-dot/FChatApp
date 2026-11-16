@@ -3,7 +3,6 @@ import React, {useEffect, useState} from 'react';
 
 import {
   ActivityIndicator,
-  Alert,
   SafeAreaView,
   StatusBar,
   StyleSheet,
@@ -31,6 +30,11 @@ import {
   registerFCMToken,
 } from './src/services/authService';
 
+import {
+  displayChatNotification,
+  handleNotificationEvent,
+} from './src/services/notificationService';
+
 import LoginScreen from './src/screens/LoginScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
 import UsersScreen from './src/screens/UsersScreen';
@@ -56,9 +60,7 @@ export default function App() {
     useState<SelectedGroup | null>(null);
 
   const [showRegister, setShowRegister] = useState(false);
-
   const [showCreateGroup, setShowCreateGroup] = useState(false);
-
   const [loading, setLoading] = useState(true);
 
   // 1. Firebase Authentication Listener
@@ -75,19 +77,37 @@ export default function App() {
   }, []);
 
   // 2. FCM Token Registration
-  useEffect(() => {
-    if (!currentUser) {
-      return;
+ // 2. FCM Token Registration
+useEffect(() => {
+  if (!currentUser) {
+    return;
+  }
+
+  let unsubscribeToken: (() => void) | undefined;
+
+  const setupFCM = async () => {
+    try {
+      // Request notification permission
+      await notifee.requestPermission();
+
+      // Register FCM token
+      await registerFCMToken(currentUser.uid);
+
+      // Listen for token refresh
+      unsubscribeToken = listenToFCMTokenRefresh(
+        currentUser.uid,
+      );
+    } catch (error) {
+      console.log('FCM Setup Error:', error);
     }
+  };
 
-    registerFCMToken(currentUser.uid);
+  setupFCM();
 
-    const unsubscribeToken = listenToFCMTokenRefresh(
-      currentUser.uid,
-    );
-
-    return unsubscribeToken;
-  }, [currentUser?.uid]);
+  return () => {
+    unsubscribeToken?.();
+  };
+}, [currentUser?.uid]);
 
   // 3. Notification Channel
   useEffect(() => {
@@ -111,44 +131,43 @@ export default function App() {
   useEffect(() => {
     const messaging = getMessaging();
 
-    const unsubscribe = onMessage(
+    // Receive notification while app is open
+    const unsubscribeMessage = onMessage(
       messaging,
       async remoteMessage => {
-        console.log('Foreground Notification:', remoteMessage);
+        console.log(
+          'Foreground Notification:',
+          remoteMessage,
+        );
 
-        try {
-          await notifee.displayNotification({
-            title:
-              remoteMessage.notification?.title || 'New Message',
-
-            body:
-              remoteMessage.notification?.body ||
-              'You received a new message',
-
-            android: {
-              channelId: 'default',
-              importance: AndroidImportance.HIGH,
-              sound: 'default',
-              pressAction: {
-                id: 'default',
-                launchActivity: 'default',
-              },
-            },
-          });
-        } catch (error) {
-          console.log('Display Notification Error:', error);
-        }
+        await displayChatNotification(remoteMessage);
       },
     );
 
-    return unsubscribe;
+    // Handle Reply action while app is open
+    const unsubscribeNotifee = notifee.onForegroundEvent(
+      async ({type, detail}) => {
+        await handleNotificationEvent({
+          type,
+          detail,
+        });
+      },
+    );
+
+    return () => {
+      unsubscribeMessage();
+      unsubscribeNotifee();
+    };
   }, []);
 
   // 5. Loading Screen
   if (loading) {
     return (
       <View style={styles.loader}>
-        <ActivityIndicator size="large" color="#2563EB" />
+        <ActivityIndicator
+          size="large"
+          color="#2563EB"
+        />
       </View>
     );
   }

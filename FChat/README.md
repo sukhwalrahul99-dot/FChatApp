@@ -12,7 +12,7 @@ To start the Metro dev server, run the following command from the root of your R
 
 ```sh
 # Using npm
-npm start
+npm start 
 
 # OR using Yarn
 yarn start
@@ -32,7 +32,7 @@ npm run android
 yarn android
 ```
 
-### iOS
+### iOS 
 
 For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
 
