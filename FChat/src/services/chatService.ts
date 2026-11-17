@@ -27,8 +27,12 @@ const CLOUDINARY_CLOUD_NAME = 'eqhym3o6';
 const CLOUDINARY_UPLOAD_PRESET = 'chat_media';
 
 // Notification Backend URL
+// const NOTIFICATION_API_URL =
+//   'https://kebab-chewy-garden.ngrok-free.dev';
+
 const NOTIFICATION_API_URL =
-  'https://kebab-chewy-garden.ngrok-free.dev';
+  'https://glory-usher-deputize.ngrok-free.dev';
+  
 
 export type NotificationType = 'single' | 'group';
 

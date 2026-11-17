@@ -1,5 +1,5 @@
-
-import React, {useEffect, useState} from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
   View,
@@ -28,8 +28,7 @@ import {
   isErrorWithCode,
 } from '@react-native-documents/picker';
 
-import {UserProfile, ChatMessage} from '../types';
-
+import { UserProfile, ChatMessage } from '../types';
 import MessageBubble from '../components/MessageBubble';
 
 import {
@@ -59,6 +58,18 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
 
+  // FlatList scroll references
+  const messagesListRef = useRef<FlatList<ChatMessage> | null>(null);
+  const hasScrolledToLatest = useRef(false);
+  const isInitialScrollPending = useRef(false);
+
+  // Scroll to latest message
+  const scrollToLatest = (animated = false) => {
+    requestAnimationFrame(() => {
+      messagesListRef.current?.scrollToEnd({ animated });
+    });
+  };
+
   // Create or open conversation
   useEffect(() => {
     let isActive = true;
@@ -66,11 +77,12 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
     const setupChat = async () => {
       try {
         setLoading(true);
+        setConversationId('');
+        setMessages([]);
+        hasScrolledToLatest.current = false;
+        isInitialScrollPending.current = false;
 
-        const id = await createConversation(
-          currentUserId,
-          selectedUser.uid,
-        );
+        const id = await createConversation(currentUserId, selectedUser.uid);
 
         if (isActive) {
           setConversationId(id);
@@ -80,7 +92,6 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
           'Unable to Open Chat',
           error.message || 'Something went wrong.',
         );
-
         setLoading(false);
       }
     };
@@ -98,36 +109,56 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
       return;
     }
 
+    hasScrolledToLatest.current = false;
+    isInitialScrollPending.current = false;
+
     const unsubscribe = listenToMessages(
       conversationId,
       newMessages => {
         setMessages(newMessages);
         setLoading(false);
 
-        // Mark incoming messages as seen
-        markMessagesAsSeen(
-          conversationId,
-          currentUserId,
-          newMessages,
-        ).catch(error => {
-          console.log('Seen Status Error:', error);
-        });
+        if (!hasScrolledToLatest.current) {
+          isInitialScrollPending.current = true;
+        }
+
+        markMessagesAsSeen(conversationId, currentUserId, newMessages).catch(
+          error => {
+            console.log('Seen Status Error:', error);
+          },
+        );
+      },
+      error => {
+        console.log('Message Listener Error:', error);
+        setLoading(false);
       },
     );
 
     return unsubscribe;
   }, [conversationId, currentUserId]);
 
+  // Initial scroll after messages and layout are ready
+  useEffect(() => {
+    if (loading || !isInitialScrollPending.current) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      if (isInitialScrollPending.current) {
+        scrollToLatest(false);
+        hasScrolledToLatest.current = true;
+        isInitialScrollPending.current = false;
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [messages, loading]);
+
   // Send text message
   const handleSend = async () => {
     const text = messageText.trim();
 
-    if (
-      !text ||
-      !conversationId ||
-      sending ||
-      uploading
-    ) {
+    if (!text || !conversationId || sending || uploading) {
       return;
     }
 
@@ -135,18 +166,11 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
       setSending(true);
       setMessageText('');
 
-      await sendMessage(
-        conversationId,
-        text,
-        currentUserId,
-      );
+      await sendMessage(conversationId, text, currentUserId);
     } catch (error: any) {
       setMessageText(text);
 
-      Alert.alert(
-        'Message Failed',
-        error.message || 'Unable to send message.',
-      );
+      Alert.alert('Message Failed', error.message || 'Unable to send message.');
     } finally {
       setSending(false);
     }
@@ -171,13 +195,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
           style: 'destructive',
           onPress: async () => {
             try {
-              await deleteMessage(
-                conversationId,
-                message.id,
-                currentUserId,
-              );
-
-              // Firestore listener automatically removes message
+              await deleteMessage(conversationId, message.id, currentUserId);
             } catch (error: any) {
               Alert.alert(
                 'Delete Failed',
@@ -193,21 +211,16 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
   // Upload selected media to Cloudinary
   const handleMediaUpload = async (asset: Asset) => {
     if (!asset.uri || !conversationId) {
-      Alert.alert(
-        'Error',
-        'Unable to access selected file.',
-      );
+      Alert.alert('Error', 'Unable to access selected file.');
       return;
     }
 
     try {
       setUploading(true);
 
-      const fileName =
-        asset.fileName || `media_${Date.now()}`;
+      const fileName = asset.fileName || `media_${Date.now()}`;
 
-      const fileType =
-        asset.type || 'application/octet-stream';
+      const fileType = asset.type || 'application/octet-stream';
 
       await uploadMedia(
         conversationId,
@@ -218,24 +231,16 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
         asset.fileSize,
       );
 
-      Alert.alert(
-        'Success',
-        'Media sent successfully.',
-      );
+      Alert.alert('Success', 'Media sent successfully.');
     } catch (error: any) {
-      Alert.alert(
-        'Upload Failed',
-        error.message || 'Unable to upload media.',
-      );
+      Alert.alert('Upload Failed', error.message || 'Unable to upload media.');
     } finally {
       setUploading(false);
     }
   };
 
   // Open image or video gallery
-  const openGallery = async (
-    mediaType: 'photo' | 'video',
-  ) => {
+  const openGallery = async (mediaType: 'photo' | 'video') => {
     try {
       const options: ImageLibraryOptions = {
         mediaType,
@@ -262,10 +267,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
         await handleMediaUpload(asset);
       }
     } catch (error: any) {
-      Alert.alert(
-        'Error',
-        error.message || 'Something went wrong.',
-      );
+      Alert.alert('Error', error.message || 'Something went wrong.');
     }
   };
 
@@ -273,11 +275,7 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
   const openDocument = async () => {
     try {
       const result = await pick({
-        type: [
-          types.pdf,
-          types.doc,
-          types.docx,
-        ],
+        type: [types.pdf, types.doc, types.docx],
         allowMultiSelection: false,
       });
 
@@ -312,37 +310,28 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
 
   // Attachment options
   const showAttachmentOptions = () => {
-    if (
-      loading ||
-      uploading ||
-      sending ||
-      !conversationId
-    ) {
+    if (loading || uploading || sending || !conversationId) {
       return;
     }
 
-    Alert.alert(
-      'Attach File',
-      'Select attachment type',
-      [
-        {
-          text: 'Image',
-          onPress: () => openGallery('photo'),
-        },
-        {
-          text: 'Video',
-          onPress: () => openGallery('video'),
-        },
-        {
-          text: 'Document',
-          onPress: openDocument,
-        },
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
-      ],
-    );
+    Alert.alert('Attach File', 'Select attachment type', [
+      {
+        text: 'Image',
+        onPress: () => openGallery('photo'),
+      },
+      {
+        text: 'Video',
+        onPress: () => openGallery('video'),
+      },
+      {
+        text: 'Document',
+        onPress: openDocument,
+      },
+      {
+        text: 'Cancel',
+        style: 'cancel',
+      },
+    ]);
   };
 
   // User initial
@@ -351,193 +340,187 @@ const ChatScreen: React.FC<ChatScreenProps> = ({
     : '?';
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={0}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
+      <StatusBar
+        barStyle="dark-content"
+        backgroundColor="#F1F5F9"
+        translucent={false}
+      />
 
-      <StatusBar barStyle="dark-content" />
+     <KeyboardAvoidingView
+  style={styles.container}
+  behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+  keyboardVerticalOffset={0}
+>
+        {/* Header */}
+        <View style={styles.header}>
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={onBack}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.backIcon}>‹</Text>
+          </TouchableOpacity>
 
-      {/* Premium Header */}
-      <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={onBack}
-          activeOpacity={0.7}>
-          <Text style={styles.backIcon}>‹</Text>
-        </TouchableOpacity>
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{userInitial}</Text>
+          </View>
 
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>
-            {userInitial}
-          </Text>
+          <View style={styles.headerInfo}>
+            <Text style={styles.userName} numberOfLines={1}>
+              {selectedUser.name}
+            </Text>
+
+            <Text style={styles.userStatus}>{selectedUser.email}</Text>
+          </View>
+
+          <TouchableOpacity style={styles.headerAction} activeOpacity={0.7}>
+            <Text style={styles.actionIcon}>⋮</Text>
+          </TouchableOpacity>
         </View>
 
-        <View style={styles.headerInfo}>
-          <Text style={styles.userName} numberOfLines={1}>
-            {selectedUser.name}
-          </Text>
+        {/* Chat Area */}
+        <View style={styles.chatArea}>
+          {loading ? (
+            <View style={styles.loaderContainer}>
+              <ActivityIndicator size="large" color="#2563EB" />
 
-          <Text style={styles.userStatus}>
-            {selectedUser.email}
-          </Text>
+              <Text style={styles.loadingText}>Loading conversation...</Text>
+            </View>
+          ) : (
+            <FlatList
+              ref={messagesListRef}
+              data={[...messages].reverse()}
+              inverted
+              keyExtractor={item => item.id}
+              renderItem={({ item }) => {
+                const isMine = item.senderId === currentUserId;
+
+                const isSeen = (item.seenBy || []).includes(selectedUser.uid);
+
+                return (
+                  <View style={styles.messageItem}>
+                    <TouchableOpacity
+                      activeOpacity={1}
+                      onLongPress={() => {
+                        if (isMine) {
+                          handleDeleteMessage(item);
+                        }
+                      }}
+                      delayLongPress={500}
+                    >
+                      <MessageBubble
+                        message={item}
+                        currentUserId={currentUserId}
+                      />
+                    </TouchableOpacity>
+
+                    {isMine && (
+                      <View style={styles.receiptContainer}>
+                        <Text
+                          style={[
+                            styles.receiptText,
+                            isSeen && styles.seenText,
+                          ]}
+                        >
+                          {isSeen ? 'Seen' : 'Sent'}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                );
+              }}
+              onLayout={() => {
+                if (isInitialScrollPending.current) {
+                  scrollToLatest(false);
+                }
+              }}
+              onContentSizeChange={() => {
+                if (isInitialScrollPending.current) {
+                  scrollToLatest(false);
+                  hasScrolledToLatest.current = true;
+                  isInitialScrollPending.current = false;
+                }
+              }}
+              style={styles.messageList}
+              contentContainerStyle={[
+                styles.messageContent,
+                messages.length === 0 && styles.emptyContent,
+              ]}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              ListEmptyComponent={
+                <View style={styles.emptyContainer}>
+                  <View style={styles.emptyIcon}>
+                    <Text style={styles.emptyEmoji}>✉</Text>
+                  </View>
+
+                  <Text style={styles.emptyTitle}>Start a Conversation</Text>
+
+                  <Text style={styles.emptySubtitle}>
+                    Send your first message to {selectedUser.name}.
+                  </Text>
+                </View>
+              }
+            />
+          )}
         </View>
 
-        <TouchableOpacity
-          style={styles.headerAction}
-          activeOpacity={0.7}>
-          <Text style={styles.actionIcon}>⋮</Text>
-        </TouchableOpacity>
-      </View>
+        {/* Upload Progress */}
+        {uploading && (
+          <View style={styles.uploadingContainer}>
+            <ActivityIndicator color="#2563EB" />
 
-      {/* Chat Area */}
-      <View style={styles.chatArea}>
-        {loading ? (
-          <View style={styles.loaderContainer}>
-            <ActivityIndicator
-              size="large"
-              color="#2563EB"
+            <Text style={styles.uploadingText}>Uploading media...</Text>
+          </View>
+        )}
+
+        {/* Message Input */}
+        <View style={styles.inputWrapper}>
+          <View style={styles.inputContainer}>
+            <TouchableOpacity
+              style={styles.attachButton}
+              onPress={showAttachmentOptions}
+              disabled={loading || uploading || sending}
+            >
+              <Text style={styles.attachIcon}>＋</Text>
+            </TouchableOpacity>
+
+            <TextInput
+              style={styles.input}
+              placeholder="Type your message..."
+              placeholderTextColor="#94A3B8"
+              value={messageText}
+              onChangeText={setMessageText}
+              multiline
+              maxLength={3000}
+              editable={!sending && !loading && !uploading}
             />
 
-            <Text style={styles.loadingText}>
-              Loading conversation...
-            </Text>
-          </View>
-        ) : (
-          <FlatList
-            data={messages}
-            keyExtractor={item => item.id}
-            renderItem={({item}) => {
-              const isMine =
-                item.senderId === currentUserId;
-
-              const isSeen =
-                (item.seenBy || []).includes(selectedUser.uid);
-
-              return (
-                <View style={styles.messageItem}>
-                  <TouchableOpacity
-                    activeOpacity={1}
-                    onLongPress={() => {
-                      if (isMine) {
-                        handleDeleteMessage(item);
-                      }
-                    }}
-                    delayLongPress={500}>
-                    <MessageBubble
-                      message={item}
-                      currentUserId={currentUserId}
-                    />
-                  </TouchableOpacity>
-
-                  {/* Sent / Seen status */}
-                  {isMine && (
-                    <View style={styles.receiptContainer}>
-                      <Text
-                        style={[
-                          styles.receiptText,
-                          isSeen && styles.seenText,
-                        ]}>
-                        {isSeen ? 'Seen' : 'Sent'}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-              );
-            }}
-            style={styles.messageList}
-            contentContainerStyle={[
-              styles.messageContent,
-              messages.length === 0 &&
-                styles.emptyContent,
-            ]}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-            ListEmptyComponent={
-              <View style={styles.emptyContainer}>
-                <View style={styles.emptyIcon}>
-                  <Text style={styles.emptyEmoji}>✉</Text>
-                </View>
-
-                <Text style={styles.emptyTitle}>
-                  Start a Conversation
-                </Text>
-
-                <Text style={styles.emptySubtitle}>
-                  Send your first message to{' '}
-                  {selectedUser.name}.
-                </Text>
-              </View>
-            }
-          />
-        )}
-      </View>
-
-      {/* Upload Progress */}
-      {uploading && (
-        <View style={styles.uploadingContainer}>
-          <ActivityIndicator color="#2563EB" />
-
-          <Text style={styles.uploadingText}>
-            Uploading media...
-          </Text>
-        </View>
-      )}
-
-      {/* Message Input */}
-      <View style={styles.inputWrapper}>
-        <View style={styles.inputContainer}>
-
-          <TouchableOpacity
-            style={styles.attachButton}
-            onPress={showAttachmentOptions}
-            disabled={loading || uploading || sending}>
-            <Text style={styles.attachIcon}>＋</Text>
-          </TouchableOpacity>
-
-          <TextInput
-            style={styles.input}
-            placeholder="Type your message..."
-            placeholderTextColor="#94A3B8"
-            value={messageText}
-            onChangeText={setMessageText}
-            multiline
-            maxLength={3000}
-            editable={!sending && !loading && !uploading}
-          />
-
-          <TouchableOpacity
-            style={[
-              styles.sendButton,
-              (!messageText.trim() ||
+            <TouchableOpacity
+              style={[
+                styles.sendButton,
+                (!messageText.trim() || sending || loading || uploading) &&
+                  styles.sendButtonDisabled,
+              ]}
+              onPress={handleSend}
+              disabled={
                 sending ||
+                uploading ||
                 loading ||
-                uploading) &&
-                styles.sendButtonDisabled,
-            ]}
-            onPress={handleSend}
-            disabled={
-              sending ||
-              uploading ||
-              loading ||
-              !messageText.trim() ||
-              !conversationId
-            }
-            activeOpacity={0.8}>
+                !messageText.trim() ||
+                !conversationId
+              }
+              activeOpacity={0.8}
+            >
+              <Text style={styles.sendIcon}>{sending ? '...' : '➤'}</Text>
+            </TouchableOpacity>
+          </View>
 
-            <Text style={styles.sendIcon}>
-              {sending ? '...' : '➤'}
-            </Text>
-          </TouchableOpacity>
-
+          
         </View>
-
-        <Text style={styles.footerText}>
-          Private conversation
-        </Text>
-      </View>
-
-    </KeyboardAvoidingView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 };
 
@@ -545,13 +528,18 @@ export default ChatScreen;
 
 // Styles
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#F1F5F9',
+  },
+
   container: {
     flex: 1,
     backgroundColor: '#F1F5F9',
   },
 
   header: {
-    marginTop: 10,
+    marginTop: 0,
     minHeight: 80,
     backgroundColor: '#FFFFFF',
     flexDirection: 'row',
@@ -733,14 +721,15 @@ const styles = StyleSheet.create({
   },
 
   inputWrapper: {
-    backgroundColor: '#FFFFFF',
+    // backgroundColor: '#FFFFFF',
     paddingHorizontal: 12,
-    paddingTop: 12,
-    paddingBottom: Platform.OS === 'ios' ? 18 : 10,
-    borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
+    paddingTop: 8,
+    paddingBottom: Platform.OS === 'ios' ? 8 : 6,
+    // borderTopWidth: 1,
+    // borderTopColor: '#E2E8F0',
   },
 
+   
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -765,16 +754,17 @@ const styles = StyleSheet.create({
     fontWeight: '400',
   },
 
-  input: {
-    flex: 1,
-    minHeight: 44,
-    maxHeight: 110,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    fontSize: 14,
-    color: '#0F172A',
-    textAlignVertical: 'center',
-  },
+ input: {
+  flex: 1,
+  minHeight: 44,
+  maxHeight: 110,
+  paddingHorizontal: 10,
+  paddingVertical: 8,
+  fontSize: 14,
+  color: '#0F172A',
+  textAlignVertical: 'center',
+  includeFontPadding: false,
+},
 
   sendButton: {
     width: 43,

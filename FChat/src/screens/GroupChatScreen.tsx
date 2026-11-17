@@ -15,6 +15,13 @@ import {
   StatusBar,
 } from 'react-native';
 
+import {SafeAreaView} from 'react-native-safe-area-context';
+
+import {
+  getDoc,
+  doc,
+} from '@react-native-firebase/firestore';
+
 import {
   launchImageLibrary,
   ImageLibraryOptions,
@@ -31,6 +38,8 @@ import {
 import {ChatMessage} from '../types';
 
 import MessageBubble from '../components/MessageBubble';
+
+import {db} from '../services/firebase';
 
 import {
   listenToMessages,
@@ -61,6 +70,11 @@ const GroupChatScreen: React.FC<GroupChatScreenProps> = ({
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
 
+  // Store group member names
+  const [senderNames, setSenderNames] = useState<
+    Record<string, string>
+  >({});
+
   // Listen to group messages
   useEffect(() => {
     if (!groupId) {
@@ -84,15 +98,92 @@ const GroupChatScreen: React.FC<GroupChatScreenProps> = ({
           console.log('Group Seen Status Error:', error);
         });
       },
-      error => {
+      (error: any) => {
         console.log('Group Messages Error:', error);
         setLoading(false);
-        Alert.alert('Error', error.message);
+
+        Alert.alert(
+          'Error',
+          error.message || 'Unable to load group messages.',
+        );
       },
     );
 
     return unsubscribe;
   }, [groupId, currentUserId]);
+
+  // Fetch sender names from Firestore users collection
+  useEffect(() => {
+    const senderIds = Array.from(
+      new Set(
+        messages
+          .map(message => message.senderId)
+          .filter(
+            senderId =>
+              senderId &&
+              senderId !== currentUserId &&
+              !senderNames[senderId],
+          ),
+      ),
+    );
+
+    if (senderIds.length === 0) {
+      return;
+    }
+
+    let isActive = true;
+
+    const fetchSenderNames = async () => {
+      const results = await Promise.all(
+        senderIds.map(async senderId => {
+          try {
+            const userSnapshot = await getDoc(
+              doc(db, 'users', senderId),
+            );
+
+            if (userSnapshot.exists()) {
+              const userData = userSnapshot.data() as {
+                name?: string;
+                displayName?: string;
+                email?: string;
+              };
+
+              const name =
+                userData.name?.trim() ||
+                userData.displayName?.trim() ||
+                userData.email?.split('@')[0] ||
+                'Group member';
+
+              return [senderId, name] as const;
+            }
+
+            return [senderId, 'Group member'] as const;
+          } catch (error) {
+            console.log(
+              'Sender Name Fetch Error:',
+              senderId,
+              error,
+            );
+
+            return [senderId, 'Group member'] as const;
+          }
+        }),
+      );
+
+      if (isActive) {
+        setSenderNames(previous => ({
+          ...previous,
+          ...Object.fromEntries(results),
+        }));
+      }
+    };
+
+    fetchSenderNames();
+
+    return () => {
+      isActive = false;
+    };
+  }, [messages, currentUserId, senderNames]);
 
   // Send text message
   const handleSend = async () => {
@@ -323,7 +414,9 @@ const GroupChatScreen: React.FC<GroupChatScreenProps> = ({
   const renderMessage = ({item}: {item: ChatMessage}) => {
     const isMine = item.senderId === currentUserId;
 
-    const senderName = isMine ? 'You' : 'Member';
+    const senderName = isMine
+      ? 'You'
+      : senderNames[item.senderId] || 'Group member';
 
     return (
       <View>
@@ -337,11 +430,10 @@ const GroupChatScreen: React.FC<GroupChatScreenProps> = ({
           activeOpacity={0.9}
           onLongPress={() => handleDeleteMessage(item)}
           delayLongPress={500}>
-
-         <MessageBubble
-  message={item}
-  currentUserId={currentUserId}
-/>
+          <MessageBubble
+            message={item}
+            currentUserId={currentUserId}
+          />
         </TouchableOpacity>
 
         <View
@@ -368,130 +460,149 @@ const GroupChatScreen: React.FC<GroupChatScreenProps> = ({
   };
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}>
+    <SafeAreaView
+      style={styles.safeArea}
+      edges={['top', 'bottom']}>
 
-      <StatusBar barStyle="dark-content" />
+      <StatusBar
+        barStyle="dark-content"
+        backgroundColor="#FFFFFF"
+        translucent={false}
+      />
 
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={onBack}>
-          <Text style={styles.backText}>‹</Text>
-        </TouchableOpacity>
+      <KeyboardAvoidingView
+  style={styles.container}
+  behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+  keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}>
 
-        <View style={styles.groupAvatar}>
-          <Text style={styles.groupAvatarText}>
-            {groupName.trim().charAt(0).toUpperCase() || 'G'}
-          </Text>
+        {/* Header */}
+        <View style={styles.header}>
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={onBack}>
+            <Text style={styles.backText}>‹</Text>
+          </TouchableOpacity>
+
+          <View style={styles.groupAvatar}>
+            <Text style={styles.groupAvatarText}>
+              {groupName.trim().charAt(0).toUpperCase() || 'G'}
+            </Text>
+          </View>
+
+          <View style={styles.headerInfo}>
+            <Text style={styles.headerTitle} numberOfLines={1}>
+              {groupName}
+            </Text>
+
+            <Text style={styles.headerSubtitle}>
+              {memberCount
+                ? `${memberCount} members`
+                : 'Group conversation'}
+            </Text>
+          </View>
         </View>
 
-        <View style={styles.headerInfo}>
-          <Text style={styles.headerTitle} numberOfLines={1}>
-            {groupName}
-          </Text>
+        {/* Messages */}
+        <View style={styles.chatArea}>
+          {loading ? (
+            <View style={styles.loaderContainer}>
+              <ActivityIndicator
+                size="large"
+                color="#2563EB"
+              />
 
-          <Text style={styles.headerSubtitle}>
-            {memberCount
-              ? `${memberCount} members`
-              : 'Group conversation'}
-          </Text>
-        </View>
-      </View>
-
-      {/* Messages */}
-      {loading ? (
-        <View style={styles.loaderContainer}>
-          <ActivityIndicator
-            size="large"
-            color="#2563EB"
-          />
-
-          <Text style={styles.loadingText}>
-            Loading messages...
-          </Text>
-        </View>
-      ) : (
-        <FlatList
-          data={messages}
-          keyExtractor={item => item.id}
-          renderItem={renderMessage}
-          inverted={false}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.messageList}
-          keyboardShouldPersistTaps="handled"
-          ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <Text style={styles.emptyTitle}>
-                No Messages Yet
-              </Text>
-
-              <Text style={styles.emptySubtitle}>
-                Send the first message to this group.
+              <Text style={styles.loadingText}>
+                Loading messages...
               </Text>
             </View>
-          }
-        />
-      )}
-
-      {/* Upload indicator */}
-      {uploading && (
-        <View style={styles.uploadingContainer}>
-          <ActivityIndicator color="#2563EB" />
-
-          <Text style={styles.uploadingText}>
-            Uploading media...
-          </Text>
-        </View>
-      )}
-
-      {/* Input */}
-      <View style={styles.inputContainer}>
-        <TouchableOpacity
-          style={styles.attachButton}
-          onPress={showAttachmentOptions}
-          disabled={uploading || sending}>
-          <Text style={styles.attachText}>+</Text>
-        </TouchableOpacity>
-
-        <TextInput
-          style={styles.messageInput}
-          placeholder="Type a message..."
-          placeholderTextColor="#94A3B8"
-          value={messageText}
-          onChangeText={setMessageText}
-          multiline
-          maxLength={4000}
-          editable={!uploading && !sending}
-        />
-
-        <TouchableOpacity
-          style={[
-            styles.sendButton,
-            (!messageText.trim() || sending || uploading) &&
-              styles.disabledButton,
-          ]}
-          onPress={handleSend}
-          disabled={
-            !messageText.trim() || sending || uploading
-          }>
-          {sending ? (
-            <ActivityIndicator color="#FFFFFF" size="small" />
           ) : (
-            <Text style={styles.sendText}>Send</Text>
+            <FlatList
+              data={[...messages].reverse()}
+              keyExtractor={item => item.id}
+              renderItem={renderMessage}
+              inverted
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.messageList}
+              keyboardShouldPersistTaps="handled"
+              ListEmptyComponent={
+                <View style={styles.emptyContainer}>
+                  <Text style={styles.emptyTitle}>
+                    No Messages Yet
+                  </Text>
+
+                  <Text style={styles.emptySubtitle}>
+                    Send the first message to this group.
+                  </Text>
+                </View>
+              }
+            />
           )}
-        </TouchableOpacity>
-      </View>
-    </KeyboardAvoidingView>
+        </View>
+
+        {/* Upload indicator */}
+        {uploading && (
+          <View style={styles.uploadingContainer}>
+            <ActivityIndicator color="#2563EB" />
+
+            <Text style={styles.uploadingText}>
+              Uploading media...
+            </Text>
+          </View>
+        )}
+
+        {/* Input */}
+        <View style={styles.inputContainer}>
+          <TouchableOpacity
+            style={styles.attachButton}
+            onPress={showAttachmentOptions}
+            disabled={uploading || sending}>
+            <Text style={styles.attachText}>+</Text>
+          </TouchableOpacity>
+
+          <TextInput
+            style={styles.messageInput}
+            placeholder="Type a message..."
+            placeholderTextColor="#94A3B8"
+            value={messageText}
+            onChangeText={setMessageText}
+            multiline
+            maxLength={4000}
+            editable={!uploading && !sending}
+          />
+
+          <TouchableOpacity
+            style={[
+              styles.sendButton,
+              (!messageText.trim() || sending || uploading) &&
+                styles.disabledButton,
+            ]}
+            onPress={handleSend}
+            disabled={
+              !messageText.trim() || sending || uploading
+            }>
+            {sending ? (
+              <ActivityIndicator
+                color="#FFFFFF"
+                size="small"
+              />
+            ) : (
+              <Text style={styles.sendText}>Send</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 };
 
 export default GroupChatScreen;
 
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+  },
+
   container: {
     flex: 1,
     backgroundColor: '#F8FAFC',
@@ -552,6 +663,10 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#94A3B8',
     marginTop: 4,
+  },
+
+  chatArea: {
+    flex: 1,
   },
 
   messageList: {
@@ -643,15 +758,15 @@ const styles = StyleSheet.create({
   },
 
   inputContainer: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
-  },
-
+  flexDirection: 'row',
+  alignItems: 'flex-end',
+  backgroundColor: '#FFFFFF',
+  paddingHorizontal: 10,
+  paddingTop: 8,
+  paddingBottom: Platform.OS === 'ios' ? 8 : 6,
+  borderTopWidth: 1,
+  borderTopColor: '#E2E8F0',
+},
   attachButton: {
     width: 43,
     height: 43,
@@ -669,17 +784,18 @@ const styles = StyleSheet.create({
   },
 
   messageInput: {
-    flex: 1,
-    minHeight: 43,
-    maxHeight: 110,
-    backgroundColor: '#F1F5F9',
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingTop: 11,
-    paddingBottom: 10,
-    fontSize: 13,
-    color: '#172554',
-  },
+  flex: 1,
+  minHeight: 43,
+  maxHeight: 110,
+  backgroundColor: '#F1F5F9',
+  borderRadius: 14,
+  paddingHorizontal: 14,
+  paddingVertical: 8,
+  fontSize: 13,
+  color: '#172554',
+  textAlignVertical: 'center',
+  includeFontPadding: false,
+},
 
   sendButton: {
     height: 43,

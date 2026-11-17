@@ -73,3 +73,22 @@ yarn-error.log
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# Local Android signing and crash logs
+android/app/debug.keystore
+hs_err_pid*.log
+replay_pid*.log
+**/hs_err_pid*.log
+**/replay_pid*.log
+
+# Local environment files
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+**/.xcode.env.local
+
+# Firebase Admin private credentials
+serviceAccountKey.json
+**/serviceAccountKey.json

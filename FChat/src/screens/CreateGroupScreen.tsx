@@ -1,11 +1,13 @@
 
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useMemo, useState} from 'react';
 
 import {
   ActivityIndicator,
   Alert,
   FlatList,
-  SafeAreaView,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
@@ -14,14 +16,17 @@ import {
   View,
 } from 'react-native';
 
+import {SafeAreaView} from 'react-native-safe-area-context';
+
 import {
   collection,
   onSnapshot,
 } from '@react-native-firebase/firestore';
 
+import {Search, X, Users, ArrowLeft} from 'lucide-react-native';
+
 import {db} from '../services/firebase';
 import {UserProfile} from '../types';
-
 import {createGroupConversation} from '../services/chatService';
 
 interface CreateGroupScreenProps {
@@ -36,13 +41,13 @@ const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
   onGroupCreated,
 }) => {
   const [groupName, setGroupName] = useState('');
+  const [groupDescription, setGroupDescription] = useState('');
+  const [searchText, setSearchText] = useState('');
 
   const [users, setUsers] = useState<UserProfile[]>([]);
-
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
 
   const [loading, setLoading] = useState(true);
-
   const [creating, setCreating] = useState(false);
 
   // Listen to registered users
@@ -74,7 +79,33 @@ const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
     return unsubscribe;
   }, [currentUserId]);
 
-  // Select / Unselect member
+  // Search users by name or email
+  const filteredUsers = useMemo(() => {
+    const query = searchText.trim().toLowerCase();
+
+    if (!query) {
+      return users;
+    }
+
+    return users.filter(user => {
+      const name = user.name?.toLowerCase() || '';
+      const email = user.email?.toLowerCase() || '';
+
+      return (
+        name.includes(query) ||
+        email.includes(query)
+      );
+    });
+  }, [users, searchText]);
+
+  // Get selected user details
+  const selectedUsers = useMemo(() => {
+    return selectedMembers
+      .map(uid => users.find(user => user.uid === uid))
+      .filter((user): user is UserProfile => Boolean(user));
+  }, [selectedMembers, users]);
+
+  // Select or unselect a member
   const toggleMember = (uid: string) => {
     setSelectedMembers(previous => {
       if (previous.includes(uid)) {
@@ -85,13 +116,17 @@ const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
     });
   };
 
-  // Create Group
+  // Remove selected member
+  const removeMember = (uid: string) => {
+    setSelectedMembers(previous =>
+      previous.filter(id => id !== uid),
+    );
+  };
+
+  // Create group
   const handleCreateGroup = async () => {
     if (!groupName.trim()) {
-      Alert.alert(
-        'Validation',
-        'Please enter group name.',
-      );
+      Alert.alert('Validation', 'Please enter a group name.');
       return;
     }
 
@@ -119,7 +154,7 @@ const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
 
       Alert.alert(
         'Success',
-        'Group created successfully.',
+        'Your group has been created successfully.',
         [
           {
             text: 'OK',
@@ -139,9 +174,39 @@ const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
     }
   };
 
-  // Render User
+  // Render selected member chip
+  const renderSelectedMember = (user: UserProfile) => {
+    const initial =
+      user.name?.trim()?.charAt(0)?.toUpperCase() || '?';
+
+    return (
+      <View key={user.uid} style={styles.selectedChip}>
+        <View style={styles.selectedAvatar}>
+          <Text style={styles.selectedAvatarText}>
+            {initial}
+          </Text>
+        </View>
+
+        <Text style={styles.selectedName} numberOfLines={1}>
+          {user.name || 'User'}
+        </Text>
+
+        <TouchableOpacity
+          style={styles.removeButton}
+          onPress={() => removeMember(user.uid)}
+          disabled={creating}>
+          <X size={13} color="#64748B" />
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
+  // Render user list item
   const renderUser = ({item}: {item: UserProfile}) => {
     const selected = selectedMembers.includes(item.uid);
+
+    const initial =
+      item.name?.trim()?.charAt(0)?.toUpperCase() || '?';
 
     return (
       <TouchableOpacity
@@ -150,11 +215,12 @@ const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
           selected && styles.selectedUserCard,
         ]}
         activeOpacity={0.75}
-        onPress={() => toggleMember(item.uid)}>
+        onPress={() => toggleMember(item.uid)}
+        disabled={creating}>
 
         <View style={styles.avatar}>
           <Text style={styles.avatarText}>
-            {item.name?.trim()?.charAt(0)?.toUpperCase() || '?'}
+            {initial}
           </Text>
         </View>
 
@@ -164,7 +230,7 @@ const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
           </Text>
 
           <Text style={styles.userEmail} numberOfLines={1}>
-            {item.email}
+            {item.email || 'No email available'}
           </Text>
         </View>
 
@@ -182,10 +248,19 @@ const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" />
+    <SafeAreaView
+      style={styles.safeArea}
+      edges={['top', 'bottom']}>
 
-      <View style={styles.container}>
+      <StatusBar
+        backgroundColor="#F8FAFC"
+        barStyle="dark-content"
+        translucent={false}
+      />
+
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
 
         {/* Header */}
         <View style={styles.header}>
@@ -193,7 +268,7 @@ const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
             style={styles.backButton}
             onPress={onBack}
             disabled={creating}>
-            <Text style={styles.backText}>‹</Text>
+            <ArrowLeft size={21} color="#2563EB" />
           </TouchableOpacity>
 
           <View style={styles.headerInfo}>
@@ -202,17 +277,25 @@ const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
             </Text>
 
             <Text style={styles.headerSubtitle}>
-              Add members to your group
+              Start a conversation with your people
             </Text>
+          </View>
+
+          <View style={styles.headerIcon}>
+            <Users size={22} color="#2563EB" />
           </View>
         </View>
 
         <View style={styles.content}>
 
-          {/* Group Name */}
-          <View style={styles.inputCard}>
+          {/* Group Details */}
+          <View style={styles.detailsCard}>
+            <Text style={styles.sectionTitle}>
+              Group Details
+            </Text>
+
             <Text style={styles.label}>
-              GROUP NAME
+              GROUP NAME *
             </Text>
 
             <TextInput
@@ -224,17 +307,39 @@ const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
               maxLength={50}
               editable={!creating}
             />
+
+            <View style={styles.descriptionHeader}>
+              <Text style={styles.label}>
+                DESCRIPTION
+              </Text>
+
+              <Text style={styles.characterCount}>
+                {groupDescription.length}/150
+              </Text>
+            </View>
+
+            <TextInput
+              style={styles.descriptionInput}
+              placeholder="What is this group about? (Optional)"
+              placeholderTextColor="#94A3B8"
+              value={groupDescription}
+              onChangeText={setGroupDescription}
+              maxLength={150}
+              multiline
+              textAlignVertical="top"
+              editable={!creating}
+            />
           </View>
 
-          {/* Member Header */}
+          {/* Member Selection Header */}
           <View style={styles.memberHeader}>
             <View>
               <Text style={styles.sectionTitle}>
-                Select Members
+                Add Members
               </Text>
 
               <Text style={styles.sectionSubtitle}>
-                Choose at least 2 members
+                Select at least 2 people
               </Text>
             </View>
 
@@ -243,6 +348,55 @@ const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
                 {selectedMembers.length} Selected
               </Text>
             </View>
+          </View>
+
+          {/* Selected Members */}
+          {selectedUsers.length > 0 && (
+            <View style={styles.selectedSection}>
+              <Text style={styles.selectedHeading}>
+                SELECTED MEMBERS
+              </Text>
+
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={styles.selectedList}>
+                {selectedUsers.map(renderSelectedMember)}
+              </ScrollView>
+            </View>
+          )}
+
+          {/* Search */}
+          <View style={styles.searchContainer}>
+            <Search size={19} color="#94A3B8" />
+
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search by name or email..."
+              placeholderTextColor="#94A3B8"
+              value={searchText}
+              onChangeText={setSearchText}
+              editable={!creating}
+            />
+
+            {searchText.length > 0 && (
+              <TouchableOpacity
+                onPress={() => setSearchText('')}>
+                <X size={18} color="#64748B" />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {/* User List Heading */}
+          <View style={styles.listHeading}>
+            <Text style={styles.listHeadingText}>
+              AVAILABLE CONTACTS
+            </Text>
+
+            <Text style={styles.totalUsers}>
+              {filteredUsers.length} users
+            </Text>
           </View>
 
           {/* User List */}
@@ -259,46 +413,67 @@ const CreateGroupScreen: React.FC<CreateGroupScreenProps> = ({
             </View>
           ) : (
             <FlatList
-              data={users}
+              data={filteredUsers}
               keyExtractor={item => item.uid}
               renderItem={renderUser}
               showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
               contentContainerStyle={styles.listContent}
               ListEmptyComponent={
                 <View style={styles.emptyContainer}>
+                  <View style={styles.emptyIcon}>
+                    <Users size={27} color="#94A3B8" />
+                  </View>
+
                   <Text style={styles.emptyTitle}>
-                    No Users Found
+                    {searchText
+                      ? 'No Matching Users'
+                      : 'No Users Found'}
                   </Text>
 
                   <Text style={styles.emptySubtitle}>
-                    Register more users to create a group.
+                    {searchText
+                      ? 'Try searching with another name or email.'
+                      : 'Register more users to create a group.'}
                   </Text>
                 </View>
               }
             />
           )}
 
-          {/* Create Button */}
-          <TouchableOpacity
-            style={[
-              styles.createButton,
-              creating && styles.disabledButton,
-            ]}
-            activeOpacity={0.8}
-            disabled={creating}
-            onPress={handleCreateGroup}>
+          {/* Create Group Button */}
+          <View style={styles.bottomContainer}>
+            <TouchableOpacity
+              style={[
+                styles.createButton,
+                creating && styles.disabledButton,
+              ]}
+              activeOpacity={0.85}
+              disabled={creating}
+              onPress={handleCreateGroup}>
 
-            {creating ? (
-              <ActivityIndicator color="#FFFFFF" />
-            ) : (
-              <Text style={styles.createButtonText}>
-                Create Group
-              </Text>
-            )}
-          </TouchableOpacity>
+              {creating ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <>
+                  <Users size={19} color="#FFFFFF" />
+
+                  <Text style={styles.createButtonText}>
+                    Create Group
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            <Text style={styles.bottomHint}>
+              {selectedMembers.length < 2
+                ? `Select ${2 - selectedMembers.length} more member(s) to continue`
+                : `${selectedMembers.length + 1} people will be in this group, including you`}
+            </Text>
+          </View>
 
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 };
@@ -316,31 +491,25 @@ const styles = StyleSheet.create({
     backgroundColor: '#F8FAFC',
   },
 
+  // Header
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    paddingHorizontal: 18,
-    paddingVertical: 18,
-    borderBottomLeftRadius: 22,
-    borderBottomRightRadius: 22,
-    elevation: 3,
+    paddingHorizontal: 17,
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
   },
 
   backButton: {
     width: 42,
     height: 42,
     borderRadius: 13,
-    backgroundColor: '#DBEAFE',
+    backgroundColor: '#EFF6FF',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 13,
-  },
-
-  backText: {
-    fontSize: 32,
-    lineHeight: 36,
-    color: '#2563EB',
+    marginRight: 12,
   },
 
   headerInfo: {
@@ -359,52 +528,90 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 
+  headerIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    backgroundColor: '#EFF6FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
   content: {
     flex: 1,
     paddingHorizontal: 16,
-    paddingTop: 22,
-    paddingBottom: 15,
+    paddingTop: 16,
+    paddingBottom: 8,
   },
 
-  inputCard: {
+  // Group details
+  detailsCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 15,
-    padding: 16,
+    borderRadius: 16,
+    padding: 15,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    marginBottom: 24,
+    marginBottom: 19,
+  },
+
+  sectionTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#172554',
   },
 
   label: {
     fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 1,
+    letterSpacing: 0.8,
     color: '#64748B',
-    marginBottom: 10,
+    marginTop: 15,
+    marginBottom: 8,
   },
 
   input: {
-    height: 46,
-    borderRadius: 11,
+    height: 45,
+    borderRadius: 10,
     backgroundColor: '#F8FAFC',
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    paddingHorizontal: 13,
+    paddingHorizontal: 12,
     color: '#172554',
-    fontSize: 14,
+    fontSize: 13,
   },
 
+  descriptionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+
+  characterCount: {
+    fontSize: 10,
+    color: '#94A3B8',
+    marginTop: 15,
+    marginBottom: 8,
+  },
+
+  descriptionInput: {
+    minHeight: 65,
+    maxHeight: 90,
+    borderRadius: 10,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    paddingHorizontal: 12,
+    paddingTop: 11,
+    color: '#172554',
+    fontSize: 13,
+  },
+
+  // Member heading
   memberHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 15,
-  },
-
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#172554',
+    marginBottom: 12,
   },
 
   sectionSubtitle: {
@@ -426,19 +633,119 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
 
+  // Selected members
+  selectedSection: {
+    marginBottom: 13,
+  },
+
+  selectedHeading: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    color: '#64748B',
+    marginBottom: 9,
+  },
+
+  selectedList: {
+    paddingRight: 8,
+    gap: 8,
+  },
+
+  selectedChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    borderRadius: 25,
+    paddingVertical: 5,
+    paddingLeft: 5,
+    paddingRight: 9,
+  },
+
+  selectedAvatar: {
+    width: 27,
+    height: 27,
+    borderRadius: 14,
+    backgroundColor: '#2563EB',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  selectedAvatarText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+
+  selectedName: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#1E40AF',
+    maxWidth: 85,
+    marginLeft: 6,
+  },
+
+  removeButton: {
+    marginLeft: 5,
+    padding: 2,
+  },
+
+  // Search
+  searchContainer: {
+    height: 45,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    paddingHorizontal: 12,
+    marginBottom: 14,
+  },
+
+  searchInput: {
+    flex: 1,
+    fontSize: 12,
+    color: '#172554',
+    marginLeft: 9,
+    paddingVertical: 0,
+  },
+
+  // User list
+  listHeading: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+
+  listHeadingText: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    color: '#64748B',
+  },
+
+  totalUsers: {
+    fontSize: 10,
+    color: '#94A3B8',
+  },
+
   listContent: {
-    paddingBottom: 12,
+    paddingBottom: 8,
+    flexGrow: 1,
   },
 
   userCard: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    borderRadius: 14,
+    borderRadius: 13,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    padding: 12,
-    marginBottom: 10,
+    padding: 11,
+    marginBottom: 9,
   },
 
   selectedUserCard: {
@@ -447,17 +754,17 @@ const styles = StyleSheet.create({
   },
 
   avatar: {
-    width: 45,
-    height: 45,
-    borderRadius: 23,
+    width: 43,
+    height: 43,
+    borderRadius: 22,
     backgroundColor: '#DBEAFE',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    marginRight: 11,
   },
 
   avatarText: {
-    fontSize: 19,
+    fontSize: 18,
     fontWeight: '800',
     color: '#2563EB',
   },
@@ -473,7 +780,7 @@ const styles = StyleSheet.create({
   },
 
   userEmail: {
-    fontSize: 11,
+    fontSize: 10,
     color: '#94A3B8',
     marginTop: 4,
   },
@@ -499,6 +806,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
 
+  // Loading and empty states
   loaderContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -516,25 +824,45 @@ const styles = StyleSheet.create({
     paddingVertical: 35,
   },
 
+  emptyIcon: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+
   emptyTitle: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '800',
     color: '#172554',
   },
 
   emptySubtitle: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#94A3B8',
     marginTop: 7,
+    textAlign: 'center',
+    paddingHorizontal: 20,
+  },
+
+  // Bottom action
+  bottomContainer: {
+    paddingTop: 10,
+    paddingBottom: 5,
+    backgroundColor: '#F8FAFC',
   },
 
   createButton: {
-    height: 52,
+    height: 51,
+    flexDirection: 'row',
+    gap: 9,
     backgroundColor: '#2563EB',
     borderRadius: 13,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 12,
     elevation: 2,
   },
 
@@ -546,5 +874,12 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '800',
+  },
+
+  bottomHint: {
+    textAlign: 'center',
+    fontSize: 10,
+    color: '#94A3B8',
+    marginTop: 8,
   },
 });
